@@ -63,21 +63,26 @@ transactions(tx_id PK, origin, dest, amount, currency, ts, username, row_mac)
 
 La `PK` de `username` impide los registros duplicados (RF1c) directamente en la BD. Los usuarios de prueba (RF1b) se crean al arrancar si la BD está vacía.
 
-## 5. Estructura de ficheros
+## 5. Estructura de ficheros (arquitectura de la Figura 2 del enunciado)
 
 ```
-PAI1-STX/
-├── protocol.py        # canonical(), sign(), verify(), send_frame()/recv_frame()
-├── db.py              # esquema + seed + consultas
-├── server.py
-├── client.py          # CLI: register / login / transfer / logout
-├── ataques/
-│   ├── mitm_proxy.py  # proxy :5001→:5000 que cambia el amount
-│   ├── replay.py      # reenvía un frame capturado
-│   └── timing.py      # mide == vs compare_digest y genera la gráfica
-├── tests/test_seguridad.py   # MAC alterado, nonce repetido, ts caducado, bloqueo, duplicado
-├── evidencias/        # *.pcap, logs del servidor, salida de los tests
-└── README.md          # manual de despliegue
+pai1-st5/
+├── comun/protocolo.py      # trama JSON + "\n", firma canónica HMAC, nonce, timestamp
+├── cliente/
+│   ├── interfaz.py         # módulo de interfaz de usuario (UI)
+│   ├── generador.py        # generador de mensajes asegurado
+│   └── conexion.py         # interfaz de conexión (socket TCP)
+├── servidor/
+│   ├── main.py             # arranque del servidor TCP
+│   ├── conexion.py         # lector de buffer (hasta "\n")
+│   ├── validacion.py       # capa de validación de seguridad (HMAC, no-replay)
+│   ├── negocio.py          # capa de lógica de negocio (credenciales, sesiones, transacciones)
+│   └── datos.py            # BD de credenciales, nonces y transacciones (SQLite)
+├── ataques/                # mitm_proxy.py, replay.py, timing.py
+├── tests/                  # test_protocolo.py, test_seguridad.py
+├── evidencias/             # pcap/ y logs/
+├── docs/                   # memoria
+└── README.md               # manual de despliegue
 ```
 
 ## 6. Qué pide la rúbrica y cómo cubrirlo
