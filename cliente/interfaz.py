@@ -13,6 +13,7 @@ from cliente.conexion import Conexion
 from comun.protocolo import verify_mac
 
 ANCHO = 48
+INTENTOS_LOGIN = 5  # los mismos que tolera el servidor antes de bloquear
 
 
 def pantalla(usuario):
@@ -45,18 +46,26 @@ def registrarse(con):
 
 
 def iniciar_sesion(con):
-    """Devuelve (usuario, session_id, clave_sesion) o None."""
+    """Devuelve (usuario, session_id, clave_sesion) o None.
+    Si la contraseña es incorrecta la vuelve a pedir, hasta INTENTOS_LOGIN veces
+    (el servidor bloquea la cuenta al 5º fallo). Contraseña vacía = volver al menú."""
     usuario = input(" Usuario: ").strip()
-    password = getpass.getpass(" Contraseña: ")
-    reto = con.pedir(generador.login_init(usuario))
-    if not respuesta_ok(reto):
-        return None
-    msg, clave = generador.login(usuario, password, reto["salt"], reto["server_nonce"])
-    resp = con.pedir(msg)
-    if not respuesta_ok(resp, clave):
-        return None
-    print(f"\n [OK] Bienvenido/a, {usuario}")
-    return usuario, resp["session_id"], clave
+    for intento in range(1, INTENTOS_LOGIN + 1):
+        password = getpass.getpass(f" Contraseña (intento {intento}/{INTENTOS_LOGIN}, vacía para volver): ")
+        if not password:
+            return None
+        reto = con.pedir(generador.login_init(usuario))  # cada intento necesita un reto nuevo
+        if not respuesta_ok(reto):
+            return None
+        msg, clave = generador.login(usuario, password, reto["salt"], reto["server_nonce"])
+        resp = con.pedir(msg)
+        if respuesta_ok(resp, clave):
+            print(f"\n [OK] Bienvenido/a, {usuario}")
+            return usuario, resp["session_id"], clave
+        if "incorrectas" not in str(resp.get("reason")):  # bloqueado u otro error: no tiene sentido reintentar
+            return None
+        print()
+    return None
 
 
 def transferir(con, sid, clave):
