@@ -160,6 +160,17 @@ class TestSeguridad(unittest.TestCase):
         with sqlite3.connect(os.path.join(self.tmp, "test.db")) as bd:  # se deja como estaba
             bd.execute("UPDATE transactions SET amount = 75 WHERE tx_id = ?", (msg["payload"]["tx_id"],))
 
+    def test_manipular_bloqueo_se_detecta(self):
+        # RS1b: el contador de fallos y el bloqueo también están firmados; tocarlos en la BD
+        # (p. ej. para desbloquear una cuenta) se detecta como manipulación.
+        self.con.pedir(generador.registro("frank", "frank1234"))
+        self.assertNotIn("users/frank", datos.filas_corruptas())
+        with sqlite3.connect(os.path.join(self.tmp, "test.db")) as bd:
+            bd.execute("UPDATE users SET failed = 99, locked_until = 0 WHERE username = 'frank'")
+        self.assertIn("users/frank", datos.filas_corruptas())
+        with sqlite3.connect(os.path.join(self.tmp, "test.db")) as bd:  # se deja como estaba
+            bd.execute("UPDATE users SET failed = 0 WHERE username = 'frank'")
+
 
 if __name__ == "__main__":
     unittest.main()

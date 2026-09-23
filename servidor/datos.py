@@ -6,6 +6,8 @@ Todo lo que guarda el servidor:
 
 Cada fila de users y de transactions lleva un row_mac = HMAC(clave del servidor, fila).
 Si alguien abre el .db y cambia un importe a mano, el row_mac deja de cuadrar y se detecta.
+En users el MAC cubre también el contador de fallos y el bloqueo (failed, locked_until),
+así que tampoco se puede desbloquear una cuenta ni resetear los intentos editando la BD.
 La clave del servidor está en un fichero aparte (servidor.key), nunca dentro de la BD.
 """
 import hmac
@@ -87,32 +89,55 @@ def fila_integra(row_mac, *campos) -> bool:
 
 def crear_usuario(usuario, salt, clave) -> bool:
     """False si el usuario ya existe."""
-    try:
-        _uno("INSERT INTO users(username, salt, key, row_mac) VALUES (?,?,?,?)",
-             usuario, salt, clave, firma_fila(usuario, salt, clave))
+    with _lock, _db:
+        try:
+            _db.execute("INSERT INTO users(username, salt, key, row_mac) VALUES (?,?,?,?)",
+                        (usuario, salt, clave, ""))
+        except sqlite3.IntegrityError:
+            return False
+        _resellar_usuario(usuario)  # firma la fila recién creada (failed=0, locked_until=0)
         return True
-    except sqlite3.IntegrityError:
-        return False
+
+
+def _resellar_usuario(usuario) -> None:
+    """Recalcula el row_mac con los valores actuales de la fila. Se llama dentro de una
+    transacción ya abierta (con el lock tomado), tras crear el usuario o cambiar failed/
+    locked_until, para que también el estado de bloqueo quede protegido por el MAC.
+    Firma los valores tal y como los devuelve SQLite (int para failed, float para
+    locked_until), que son los mismos que luego se leen al verificar."""
+    salt, clave, failed, locked = _db.execute(
+        "SELECT salt, key, failed, locked_until FROM users WHERE username=?", (usuario,)).fetchone()
+    _db.execute("UPDATE users SET row_mac=? WHERE username=?",
+                (firma_fila(usuario, salt, clave, failed, locked), usuario))
 
 
 def leer_usuario(usuario):
     """Devuelve (salt, clave, bloqueado_hasta, fila_integra) o None si no existe."""
-    fila = _uno("SELECT salt, key, row_mac, locked_until FROM users WHERE username=?", usuario)
+    fila = _uno("SELECT salt, key, row_mac, failed, locked_until FROM users WHERE username=?", usuario)
     if fila is None:
         return None
-    salt, clave, row_mac, bloqueado_hasta = fila
-    return salt, clave, bloqueado_hasta, fila_integra(row_mac, usuario, salt, clave)
+    salt, clave, row_mac, failed, bloqueado_hasta = fila
+    return salt, clave, bloqueado_hasta, fila_integra(row_mac, usuario, salt, clave, failed, bloqueado_hasta)
 
 
 def apuntar_fallo(usuario, max_fallos, bloqueo_seg) -> None:
-    """Suma un intento fallido. Al llegar a max_fallos, bloquea la cuenta bloqueo_seg segundos."""
-    _uno("UPDATE users SET failed = failed + 1 WHERE username=?", usuario)
-    _uno("UPDATE users SET failed = 0, locked_until = ? WHERE username=? AND failed >= ?",
-         time.time() + bloqueo_seg, usuario, max_fallos)
+    """Suma un intento fallido. Al llegar a max_fallos, bloquea la cuenta bloqueo_seg segundos.
+    Recalcula el row_mac para que el contador y el bloqueo queden protegidos por integridad."""
+    with _lock, _db:
+        fila = _db.execute("SELECT failed, locked_until FROM users WHERE username=?", (usuario,)).fetchone()
+        if fila is None:
+            return
+        failed, locked_until = fila[0] + 1, fila[1]
+        if failed >= max_fallos:  # al llegar al tope: se reinicia el contador y se bloquea
+            failed, locked_until = 0, time.time() + bloqueo_seg
+        _db.execute("UPDATE users SET failed=?, locked_until=? WHERE username=?", (failed, locked_until, usuario))
+        _resellar_usuario(usuario)
 
 
 def limpiar_fallos(usuario) -> None:
-    _uno("UPDATE users SET failed = 0 WHERE username=?", usuario)
+    with _lock, _db:
+        _db.execute("UPDATE users SET failed = 0 WHERE username=?", (usuario,))
+        _resellar_usuario(usuario)
 
 
 # ---------- nonces (anti-replay) ----------
@@ -145,8 +170,9 @@ def guardar_transaccion(tx_id, origen, destino, importe, moneda, ts, usuario) ->
 
 def filas_corruptas() -> list[str]:
     """Revisa toda la BD y devuelve las filas cuyo row_mac no cuadra (alguien las ha tocado)."""
-    malas = [f"users/{u}" for u, s, k, m in _todos("SELECT username, salt, key, row_mac FROM users")
-             if not fila_integra(m, u, s, k)]
+    malas = [f"users/{u}" for u, s, k, fa, lu, m in
+             _todos("SELECT username, salt, key, failed, locked_until, row_mac FROM users")
+             if not fila_integra(m, u, s, k, fa, lu)]
     malas += [f"transactions/{f[0]}" for f in _todos("SELECT * FROM transactions")
               if not fila_integra(f[7], *f[:7])]
     return malas
