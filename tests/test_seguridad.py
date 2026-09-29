@@ -1,6 +1,7 @@
 # Tests de seguridad: MAC alterado, nonce repetido, timestamp caducado, bloqueo por intentos, usuario duplicado.
 # Ejecutar desde la raíz: python -m unittest discover tests -v
 # Arrancan un servidor de verdad en un puerto libre con una BD temporal y hablan con él por TCP.
+import logging
 import os
 import socketserver
 import sqlite3
@@ -21,6 +22,10 @@ ORIGEN, DESTINO = "ES1234567890123456789012", "ES9876543210987654321098"
 class TestSeguridad(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Saca por consola lo que el servidor va registrando durante los tests
+        # (conexión, login OK/FALLIDO, TRANSFER, integridad...). force=True por si
+        # otro test ya había tocado la config del logging.
+        logging.basicConfig(level=logging.INFO, format="    [srv] %(levelname)-7s %(message)s", force=True)
         cls.tmp = tempfile.mkdtemp()
         datos.init(os.path.join(cls.tmp, "test.db"), os.path.join(cls.tmp, "test.key"))
         negocio.sembrar()
